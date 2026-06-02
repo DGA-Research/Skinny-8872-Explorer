@@ -81,15 +81,24 @@ is one of the 12 are rolled up at build time, e.g.:
 
 (*Emerge California* is excluded — its parent *Emerge America* is not one of the 12.)
 
-### Data-quality fix — overlapping-filing de-duplication
+### Data-quality fix — overlapping-filing de-duplication (max-within-filing rule)
 The IRS source reports the same contribution in multiple filings whose periods
 overlap/nest (e.g. a Q3 *Jul–Sep* report **and** an H2 *Jul–Dec* report that both
 list the same gift). The upstream builder de-dupes only by exact period, so
-nested periods double-count. `prepare_data.py` fixes this by dropping filings
-whose period is strictly contained in a larger filing for the same org, plus a
-cross-filing safety net — matching the database's documented rule ("same donor,
-same amount, same day"). Verified: Centene 2023 → \$1.21M, Molina 2023 → \$775K,
-both exactly matching the human answer key.
+overlapping periods double-count.
+
+But a donor can also *legitimately* give the same amount on the same day more than
+once (e.g. 103 recurring \$5 gifts), and those belong in the data. The
+distinguishing fact: **a single filing is internally consistent and lists each
+real contribution the correct number of times.** So the true number of times a
+`(org, donor, date, amount)` contribution occurred is the **maximum count seen in
+any one filing — never the sum across overlapping filings.** `prepare_data.py`
+keeps, for each contribution, only the copies from the single filing that reports
+it the most times. This **preserves legitimate same-day/same-amount repeats
+reported in one filing** while **collapsing a gift double-reported across
+overlapping filings to one**. Verified both directions: 103 same-filing \$5 gifts
+all kept; Centene 2023 → \$1.21M and Molina → \$775K (cross-filing dups collapsed,
+both exactly matching the human answer key).
 
 ---
 
@@ -97,18 +106,19 @@ both exactly matching the human answer key.
 
 | Year | Metric | OLD app | NEW Skinny | Δ |
 |------|--------|--------:|-----------:|---:|
-| 2022 | Both Match | 52.4% | **62.5%** | **+10.2** |
-| 2022 | DGA Match  | 75.9% | **86.4%** | **+10.5** |
-| 2022 | RGA Match  | 74.2% | 74.3% | +0.0 |
-| 2023 | Both Match | 77.2% | 76.8% | −0.4 |
-| 2023 | DGA Match  | 85.2% | 84.9% | −0.3 |
-| 2023 | RGA Match  | 90.2% | 90.0% | −0.2 |
-| 2024 | Both Match | 76.9% | 76.8% | −0.1 |
-| 2024 | DGA Match  | 84.2% | 84.4% | +0.1 |
-| 2024 | RGA Match  | 90.9% | 90.7% | −0.2 |
+| 2022 | Both Match | 52.4% | **64.6%** | **+12.3** |
+| 2022 | DGA Match  | 75.9% | **86.9%** | **+11.1** |
+| 2022 | RGA Match  | 74.2% | **76.1%** | +1.9 |
+| 2023 | Both Match | 77.2% | **79.5%** | +2.4 |
+| 2023 | DGA Match  | 85.2% | 85.1% | −0.1 |
+| 2023 | RGA Match  | 90.2% | **93.0%** | +2.8 |
+| 2024 | Both Match | 76.9% | **79.9%** | +3.0 |
+| 2024 | DGA Match  | 84.2% | **85.0%** | +0.7 |
+| 2024 | RGA Match  | 90.9% | **93.4%** | +2.5 |
 
-**2022 improves materially; 2023 and 2024 match within ≈0.5 pts** — comfortably
-inside the ±3% bar, using the new (more accurate) IRS-direct data.
+**Every year and metric now matches or beats the old app** (DGA 2023 within
+0.1 pt; everything else improved), using the new (more accurate) IRS-direct data
+with the max-within-filing de-duplication.
 
 Reproduce with `python qc_runner.py` (writes per-year sheets to `QC Results/`).
 

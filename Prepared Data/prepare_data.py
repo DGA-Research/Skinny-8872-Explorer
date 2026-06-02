@@ -314,63 +314,52 @@ def main():
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0)
 
     # ----------------------------------------------------------------------
-    # De-duplicate overlapping-period filings (two passes).
+    # De-duplicate overlapping-period filings — the "max-within-filing" rule.
     #
     # The IRS source reports the same contribution in multiple filings whose
     # periods overlap/nest (e.g. a Q3 Jul-Sep report AND an H2 Jul-Dec report
-    # that both list the same gift). build_engine.py de-dupes by exact
-    # (EIN, period_begin, period_end), so nested/overlapping periods slip
-    # through and double-count.
+    # that both list the same gift). build_engine.py de-dupes only by exact
+    # (EIN, period_begin, period_end), so overlapping/nested periods slip
+    # through and a gift gets counted twice.
     #
-    # Pass 1 (filing-level, precise): for each original org, drop any filing
-    #   whose period is STRICTLY contained in another filing's period for that
-    #   org -- the larger filing is the comprehensive restatement. This removes
-    #   genuine double-reporting without touching coincidental duplicates.
-    # Pass 2 (contribution-level safety net): for filings that only PARTIALLY
-    #   overlap (neither nested), collapse identical contributions
-    #   (same org, donor, date, amount) that appear in more than one filing.
+    # BUT a donor can also *legitimately* give the same amount on the same day
+    # more than once (e.g. 103 recurring $5 gifts), and those belong in the data.
+    # The distinguishing fact: a single filing is internally consistent and lists
+    # each real contribution the correct number of times. So the TRUE number of
+    # times a (org, donor, date, amount) contribution occurred is the MAXIMUM
+    # count seen in any *one* filing -- never the sum across overlapping filings.
     #
-    # Verified against the human answer keys: Centene 2023 -> $1.21M (XL ✓),
-    # Molina 2023 -> $775K (XL ✓).
+    # We therefore keep, for each (org, donor, date, amount), only the copies
+    # from the single filing that reports it the most times. This:
+    #   * preserves legitimate same-day/same-amount repeats reported in one
+    #     filing (103 $5 gifts in one report -> all 103 kept), and
+    #   * collapses a gift double-reported across overlapping filings to one.
+    # Verified vs the human answer keys: Centene 2023 -> $1.21M, Molina -> $775K.
+    #
+    # Rows with no usable date are left exactly as-is (the same-day rule cannot
+    # apply without a date).
     # ----------------------------------------------------------------------
     before = len(df)
-
-    # Pass 1 — strictly-nested filing removal
-    dropped_forms = set()
-    for ein, grp in df[["_dedup_ein", "_form_id", "_pb", "_pe"]].drop_duplicates().groupby("_dedup_ein"):
-        filings = [(r._form_id, r._pb, r._pe) for r in grp.itertuples()]
-        for fid, pb, pe in filings:
-            if pb == 0 or pe == 0:
-                continue
-            for ofid, opb, ope in filings:
-                if ofid == fid:
-                    continue
-                # other filing strictly contains this one -> this one is redundant
-                if opb <= pb and ope >= pe and (opb < pb or ope > pe):
-                    dropped_forms.add(fid)
-                    break
-    if dropped_forms:
-        df = df[~df["_form_id"].isin(dropped_forms)].reset_index(drop=True)
-    removed_nested = before - len(df)
-
-    # Pass 2 — residual identical contributions across partially-overlapping
-    # filings. Collapse a (org, donor, date, amount) group to one row ONLY when
-    # it is reported across MORE THAN ONE distinct filing (true cross-filing
-    # duplicate). Identical rows within a single filing, and distinct gifts, are
-    # left untouched -- this avoids removing coincidental same-day/same-amount
-    # contributions the way a blanket dedup would.
-    mid = len(df)
     key = ["_dedup_ein", "donor", "date", "amount"]
-    nforms = df.groupby(key, dropna=True)["_form_id"].transform("nunique")
-    cross = (nforms > 1) & df.duplicated(subset=key, keep="first")
-    df = df[~cross].reset_index(drop=True)
-    removed_residual = mid - len(df)
+    dated = df[df["date"].notna()].copy()
+    undated = df[df["date"].isna()].copy()
 
+    # within-filing count of each identical contribution
+    dated["_fc"] = dated.groupby(key + ["_form_id"])["amount"].transform("size")
+    # for each contribution, choose the one filing that reports it the most times
+    best = (dated[key + ["_form_id", "_fc"]].drop_duplicates()
+            .sort_values(["_fc", "_form_id"], ascending=[False, True])
+            .drop_duplicates(subset=key, keep="first")
+            .rename(columns={"_form_id": "_best_form"})[key + ["_best_form"]])
+    dated = dated.merge(best, on=key, how="left")
+    dated = dated[dated["_form_id"] == dated["_best_form"]].drop(columns=["_fc", "_best_form"])
+
+    df = pd.concat([dated, undated], ignore_index=True)
     removed = before - len(df)
     df = df.drop(columns=["_dedup_ein", "_form_id", "_pb", "_pe"])
-    print(f"De-dup: dropped {len(dropped_forms):,} nested filings "
-          f"({removed_nested:,} rows) + {removed_residual:,} residual dup rows = "
-          f"{removed:,} ({removed/before*100:.1f}%); {len(df):,} rows remain.")
+    print(f"De-dup (max-within-filing): removed {removed:,} cross-filing duplicate "
+          f"rows ({removed/before*100:.1f}%); {len(df):,} rows remain "
+          f"({len(undated):,} undated rows kept as-is).")
 
     out_parquet = os.path.join(HERE, "skinny_8872_contributions.parquet")
     df.to_parquet(out_parquet, compression="snappy", index=False)
