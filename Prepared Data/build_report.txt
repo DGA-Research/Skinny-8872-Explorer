@@ -1,0 +1,37 @@
+Skinny 8872 — Data Build Report
+==================================================
+Source rows scanned:   8,420,334
+Rows matched (12 orgs):1,254,788
+Overlap dupes removed: 116,387
+Rows kept (deduped):   1,138,401
+Parquet size:          24.3 MB
+
+Classification (Problem 2 layered heuristic):
+  Individual          952,998  ( 75.9%)
+  Non-Individual      301,790  ( 24.1%)
+
+Affiliated-527 rows rolled up to parents:
+  831273004 -> 521870839   534 rows
+  831281397 -> 134220019   400 rows
+  871484192 -> 521304889   273 rows
+  824509198 -> 521304889   169 rows
+  471531928 -> 050532524   125 rows
+  844197020 -> 521237780   90 rows
+  863218927 -> 521304889   56 rows
+  881203081 -> 263853861   49 rows
+  824499748 -> 521304889   45 rows
+  263073030 -> 134220019   36 rows
+
+Per-recipient kept rows (2022/2023/2024):
+  Republican State Leadership Committee - RSLC (05-0   2022:99,471  2023:40,661  2024:65,027
+  Democratic Legislative Campaign Committee (52-1870   2022:44,825  2023:36,320  2024:32,724
+  Democratic Governors Association (52-1304889)        2022:54,022  2023:33,708  2024:20,748
+  Republican Governors Association (11-3655877)        2022:14,844  2023:5,265  2024:3,955
+  Democratic Association of Secretaries of State (26   2022:3,050  2023:1,112  2024:1,783
+  DEMOCRATIC ATTORNEYS GENERAL ASSOCIATION INC (13-4   2022:1,089  2023:743  2024:806
+  Republican Attorneys General Association (46-45017   2022:724  2023:460  2024:435
+  GOPAC, Inc. (52-1237780)                             2022:252  2023:167  2024:278
+  Democratic Mayors Association (52-1535470)           2022:52  2023:67  2024:99
+  Democratic Treasurers Association (84-3171981)       2022:27  2023:7  2024:11
+  National Republican Mayors Association (93-3905072   2022:0  2023:5  2024:64
+  Democratic Lieutenant Governors Association (03-04   2022:12  2023:4  2024:16
