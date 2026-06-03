@@ -314,52 +314,83 @@ def main():
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0)
 
     # ----------------------------------------------------------------------
-    # De-duplicate overlapping-period filings — the "max-within-filing" rule.
+    # De-duplicate overlapping-period filings — SUPERSESSION BY RECENCY.
     #
     # The IRS source reports the same contribution in multiple filings whose
-    # periods overlap/nest (e.g. a Q3 Jul-Sep report AND an H2 Jul-Dec report
-    # that both list the same gift). build_engine.py de-dupes only by exact
-    # (EIN, period_begin, period_end), so overlapping/nested periods slip
-    # through and a gift gets counted twice.
+    # periods overlap/nest (e.g. an original Q3 Jul-Sep report AND an amended
+    # H2 Jul-Dec report). build_engine.py de-dupes only by exact
+    # (EIN, period_begin, period_end), so overlapping/nested periods slip through.
     #
-    # BUT a donor can also *legitimately* give the same amount on the same day
-    # more than once (e.g. 103 recurring $5 gifts), and those belong in the data.
-    # The distinguishing fact: a single filing is internally consistent and lists
-    # each real contribution the correct number of times. So the TRUE number of
-    # times a (org, donor, date, amount) contribution occurred is the MAXIMUM
-    # count seen in any *one* filing -- never the sum across overlapping filings.
+    # IRS amendments are FULL RESTATEMENTS of a period (often with DIFFERENT period
+    # boundaries) and may REORGANIZE the data — e.g. re-itemizing donors out of an
+    # "Aggregate below Threshold" line — not merely repeat it. So we cannot collapse
+    # by (donor, date, amount) (that would keep both the itemized donors AND the
+    # original aggregate that contained them). Instead: for each org and date D, the
+    # authoritative filing is the org's filing covering D with the greatest insert_dt
+    # (ties -> greater form_id); a row from filing F dated D is kept iff F IS that
+    # authoritative filing, otherwise it is superseded and dropped. This preserves
+    # legitimate same-day/same-amount repeats within one filing (no within-filing
+    # de-dup) and correctly handles re-itemized/corrected restatements. Verified vs
+    # the human answer keys: Centene 2023 -> $1.21M, Molina -> $775K.
     #
-    # We therefore keep, for each (org, donor, date, amount), only the copies
-    # from the single filing that reports it the most times. This:
-    #   * preserves legitimate same-day/same-amount repeats reported in one
-    #     filing (103 $5 gifts in one report -> all 103 kept), and
-    #   * collapses a gift double-reported across overlapping filings to one.
-    # Verified vs the human answer keys: Centene 2023 -> $1.21M, Molina -> $775K.
-    #
-    # Rows with no usable date are left exactly as-is (the same-day rule cannot
-    # apply without a date).
+    # insert_dt is not in the contributions gz, so we join it from the form registry.
+    # Rows with no usable date (or no covering filing) are kept as-is.
     # ----------------------------------------------------------------------
+    import numpy as np
+
+    reg_path = os.path.join(UPGRADE_ROOT, "Sanitized Database", "8872_form_registry.csv.gz")
+    form_ins = {}
+    if os.path.exists(reg_path):
+        with gzip.open(reg_path, "rt", newline="", encoding="utf-8", errors="replace") as rf:
+            for r in csv.DictReader(rf):
+                d = re.sub(r"\D", "", str(r.get("insert_dt", "")))
+                form_ins[str(r["form_id"])] = int(d[:14].ljust(14, "0")) if d else 0
+    else:
+        print(f"WARNING: form registry not found at {reg_path}; supersession skipped.")
+
     before = len(df)
-    key = ["_dedup_ein", "donor", "date", "amount"]
-    dated = df[df["date"].notna()].copy()
-    undated = df[df["date"].isna()].copy()
+    df["_ins"] = df["_form_id"].map(form_ins).fillna(0).astype("int64")
+    yy, mm, dyd = df["date"].dt.year, df["date"].dt.month, df["date"].dt.day
+    d_arr = (yy.fillna(0).astype("int64") * 10000 + mm.fillna(0).astype("int64") * 100
+             + dyd.fillna(0).astype("int64")).to_numpy()
+    f_arr = pd.to_numeric(df["_form_id"], errors="coerce").fillna(-1).astype("int64").to_numpy()
 
-    # within-filing count of each identical contribution
-    dated["_fc"] = dated.groupby(key + ["_form_id"])["amount"].transform("size")
-    # for each contribution, choose the one filing that reports it the most times
-    best = (dated[key + ["_form_id", "_fc"]].drop_duplicates()
-            .sort_values(["_fc", "_form_id"], ascending=[False, True])
-            .drop_duplicates(subset=key, keep="first")
-            .rename(columns={"_form_id": "_best_form"})[key + ["_best_form"]])
-    dated = dated.merge(best, on=key, how="left")
-    dated = dated[dated["_form_id"] == dated["_best_form"]].drop(columns=["_fc", "_best_form"])
+    # global form_id -> (period_begin, period_end, insert_key)
+    # (use zip, not itertuples: itertuples renames leading-underscore columns)
+    form_meta = {}
+    fdf = df[["_form_id", "_pb", "_pe", "_ins"]].drop_duplicates("_form_id")
+    for fid_s, p0, p1, iv in zip(fdf["_form_id"], fdf["_pb"], fdf["_pe"], fdf["_ins"]):
+        try:
+            form_meta[int(fid_s)] = (int(p0), int(p1), int(iv))
+        except (ValueError, TypeError):
+            pass
 
-    df = pd.concat([dated, undated], ignore_index=True)
+    keep = np.ones(before, dtype=bool)
+    for ein, idx in df.groupby("_dedup_ein").groups.items():
+        rows = np.asarray(idx)
+        forms = [x for x in np.unique(f_arr[rows]) if x in form_meta]
+        if len(forms) <= 1:
+            continue  # a lone filing can't be superseded
+        dd_o, ff_o = d_arr[rows], f_arr[rows]
+        m = dd_o > 0
+        best_ins = np.zeros(len(rows), dtype="int64")
+        best_form = np.full(len(rows), -1, dtype="int64")
+        for fid in forms:
+            p0, p1, iv = form_meta[fid]
+            cov = m & (dd_o >= p0) & (dd_o <= p1)
+            better = cov & ((iv > best_ins) | ((iv == best_ins) & (fid > best_form)))
+            best_ins[better] = iv
+            best_form[better] = fid
+        drop = m & (best_form != -1) & (ff_o != best_form)
+        keep[rows[drop]] = False
+
+    n_undated = int((d_arr == 0).sum())
+    df = df[keep].reset_index(drop=True)
     removed = before - len(df)
-    df = df.drop(columns=["_dedup_ein", "_form_id", "_pb", "_pe"])
-    print(f"De-dup (max-within-filing): removed {removed:,} cross-filing duplicate "
-          f"rows ({removed/before*100:.1f}%); {len(df):,} rows remain "
-          f"({len(undated):,} undated rows kept as-is).")
+    df = df.drop(columns=["_dedup_ein", "_form_id", "_pb", "_pe", "_ins"])
+    print(f"De-dup (supersession by recency): removed {removed:,} superseded rows "
+          f"({removed/before*100:.1f}%); {len(df):,} rows remain "
+          f"({n_undated:,} undated rows kept as-is).")
 
     out_parquet = os.path.join(HERE, "skinny_8872_contributions.parquet")
     df.to_parquet(out_parquet, compression="snappy", index=False)

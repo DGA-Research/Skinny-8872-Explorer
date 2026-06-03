@@ -81,24 +81,30 @@ is one of the 12 are rolled up at build time, e.g.:
 
 (*Emerge California* is excluded — its parent *Emerge America* is not one of the 12.)
 
-### Data-quality fix — overlapping-filing de-duplication (max-within-filing rule)
+### Data-quality fix — overlapping-filing de-duplication (supersession by recency)
 The IRS source reports the same contribution in multiple filings whose periods
-overlap/nest (e.g. a Q3 *Jul–Sep* report **and** an H2 *Jul–Dec* report that both
-list the same gift). The upstream builder de-dupes only by exact period, so
-overlapping periods double-count.
+overlap/nest (e.g. an original Q3 *Jul–Sep* report **and** an amended H2 *Jul–Dec*
+report). The upstream builder de-dupes only by **exact** period, so overlapping
+periods slip through and double-count.
 
-But a donor can also *legitimately* give the same amount on the same day more than
-once (e.g. 103 recurring \$5 gifts), and those belong in the data. The
-distinguishing fact: **a single filing is internally consistent and lists each
-real contribution the correct number of times.** So the true number of times a
-`(org, donor, date, amount)` contribution occurred is the **maximum count seen in
-any one filing — never the sum across overlapping filings.** `prepare_data.py`
-keeps, for each contribution, only the copies from the single filing that reports
-it the most times. This **preserves legitimate same-day/same-amount repeats
-reported in one filing** while **collapsing a gift double-reported across
-overlapping filings to one**. Verified both directions: 103 same-filing \$5 gifts
-all kept; Centene 2023 → \$1.21M and Molina → \$775K (cross-filing dups collapsed,
-both exactly matching the human answer key).
+IRS **amendments are full restatements** of a period — often with *different*
+period boundaries — and they **reorganize** the data, not just repeat it (e.g.
+re-itemizing ~1,600 donors out of an "Aggregate below Threshold" line). So a
+contribution-level merge is wrong (it would keep both the itemized donors **and**
+the original aggregate that contained them). Instead `prepare_data.py` applies
+**supersession by recency**: for each org and date D, the *authoritative* filing is
+the one covering D with the greatest `insert_dt` (ties → greater `form_id`); a row
+is kept iff its filing **is** that authoritative filing, otherwise it's superseded
+and dropped. This **preserves legitimate same-day/same-amount repeats within one
+filing** (no within-filing de-dup) while **dropping superseded originals when a
+later amendment restates their dates** — and it correctly handles re-itemized,
+corrected, added, or removed contributions, now and for future amendments.
+
+Verified: 103 same-filing \$5 gifts all kept; DGA 2023 = H1 + amended H2 (the
+original Q3/Q4 superseded); Centene 2023 → \$1.21M and Molina → \$775K (exactly the
+human answer key). `insert_dt` is read from `8872_form_registry.csv.gz`.
+The same rule is applied at the source in `build_engine.py` (Stage 4.5) so every
+future canonical rebuild is correct.
 
 ---
 
@@ -108,17 +114,17 @@ both exactly matching the human answer key).
 |------|--------|--------:|-----------:|---:|
 | 2022 | Both Match | 52.4% | **64.6%** | **+12.3** |
 | 2022 | DGA Match  | 75.9% | **86.9%** | **+11.1** |
-| 2022 | RGA Match  | 74.2% | **76.1%** | +1.9 |
+| 2022 | RGA Match  | 74.2% | **76.0%** | +1.8 |
 | 2023 | Both Match | 77.2% | **79.5%** | +2.4 |
-| 2023 | DGA Match  | 85.2% | 85.1% | −0.1 |
-| 2023 | RGA Match  | 90.2% | **93.0%** | +2.8 |
-| 2024 | Both Match | 76.9% | **79.9%** | +3.0 |
-| 2024 | DGA Match  | 84.2% | **85.0%** | +0.7 |
-| 2024 | RGA Match  | 90.9% | **93.4%** | +2.5 |
+| 2023 | DGA Match  | 85.2% | 84.9% | −0.3 |
+| 2023 | RGA Match  | 90.2% | **93.1%** | +2.9 |
+| 2024 | Both Match | 76.9% | **80.0%** | +3.1 |
+| 2024 | DGA Match  | 84.2% | **85.1%** | +0.8 |
+| 2024 | RGA Match  | 90.9% | **93.5%** | +2.6 |
 
-**Every year and metric now matches or beats the old app** (DGA 2023 within
-0.1 pt; everything else improved), using the new (more accurate) IRS-direct data
-with the max-within-filing de-duplication.
+**Every year and metric matches or beats the old app** (DGA 2023 within
+0.3 pt; everything else improved), using the new (more accurate) IRS-direct data
+with supersession-by-recency de-duplication.
 
 Reproduce with `python qc_runner.py` (writes per-year sheets to `QC Results/`).
 

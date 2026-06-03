@@ -2,9 +2,9 @@ Skinny 8872 — Data Build Report
 ==================================================
 Source rows scanned:   8,420,334
 Rows matched (12 orgs):1,254,788
-Overlap dupes removed: 12,073
-Rows kept (deduped):   1,242,715
-Parquet size:          24.5 MB
+Overlap dupes removed: 12,399
+Rows kept (deduped):   1,242,389
+Parquet size:          24.4 MB
 
 Classification (Problem 2 layered heuristic):
   Individual          952,998  ( 75.9%)
